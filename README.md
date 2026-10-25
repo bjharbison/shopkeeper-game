@@ -61,7 +61,8 @@ docs/DESIGN.md        # v1 design spec (read this for Phase 3)
 > **Play-test on the Spectre:** this PR was validated headless in the cloud
 > (see "Run the tests"), but the *feel* — drag thresholds, hit-box size, pacing
 > for a 4-year-old — can only be judged by pressing Play on the touchscreen.
-> That tuning is what `config.cfg` is for.
+> That tuning is what `config.cfg` is for; [`docs/PLAYTEST.md`](docs/PLAYTEST.md)
+> is a knob-by-knob guide (what you see her do → which value to change).
 
 ## Difficulty knobs (`game/config.cfg`)
 
