@@ -16,7 +16,14 @@ const TouchProviderCls := preload("res://input/touch_provider.gd")
 const ReplayProviderCls := preload("res://input/replay_provider.gd")
 const RecorderCls := preload("res://input/recorder.gd")
 
+# Phase 2 game-loop pieces.
+const GameConfigCls := preload("res://scripts/game_config.gd")
+const ZonesCls := preload("res://scripts/zones.gd")
+const SelectCls := preload("res://scripts/select.gd")
+const ShopModelCls := preload("res://scripts/shop_model.gd")
+
 const FIXTURE_3PT := "res://test/fixtures/replay_3pt.jsonl"
+const SEED := 20261025
 
 var _pass := 0
 var _fail := 0
@@ -28,6 +35,17 @@ func _initialize() -> void:
 	_test_recorder_round_trip()
 	_test_first_finger_wins()
 	_test_coords_in_range()
+
+	print("\n== Shopkeeper Phase 2 tests ==")
+	_test_full_round_via_replay()
+	_test_wrong_item_not_penalized()
+	_test_release_outside_returns()
+	_test_ten_round_playthrough()
+	_test_config_interaction_mode()
+	_test_config_hit_box_size()
+	_test_config_file_parses()
+	await _test_scenes_instantiate()   # needs a real frame for _ready to fire
+
 	print("\n== %d passed, %d failed ==" % [_pass, _fail])
 	quit(1 if _fail > 0 else 0)
 
@@ -162,3 +180,237 @@ func _drag(index: int, pos: Vector2) -> InputEventScreenDrag:
 	e.index = index
 	e.position = pos
 	return e
+
+
+# ======================= Phase 2: game loop ===================================
+# These drive the real pieces (Zones, Select, ShopModel) exactly as the shop
+# scene does, but with no window — gesture samples arrive through ReplayProvider,
+# which is the point of the input seam. Pointer coordinates are computed from the
+# live layout so the tests can't drift out of sync with Zones.
+
+# Build a Select of the given mode over `zones`, replay `samples` through it (each
+# sample is [x, y, down]) via ReplayProvider, and return what it emitted:
+#   { "grabbed": [slot...], "released": [{slot, delivered}...], "moves": int }
+func _run_gesture(zones, mode: String, samples: Array) -> Dictionary:
+	var sel = SelectCls.new(zones, mode)
+	var out := {"grabbed": [], "released": [], "moves": 0}
+	sel.item_grabbed.connect(func(i): out["grabbed"].append(i))
+	sel.item_released.connect(func(i, d): out["released"].append({"slot": i, "delivered": d}))
+	sel.item_moved.connect(func(_p): out["moves"] += 1)
+
+	var lines := PackedStringArray()
+	var t := 0.0
+	for s in samples:
+		lines.append(JSON.stringify({"t": t, "x": s[0], "y": s[1], "down": s[2], "present": true}))
+		t += 0.05
+	var rp = ReplayProviderCls.new()
+	rp.load_lines(lines)
+	rp.start()
+	var p = rp.poll()
+	while p != null:
+		sel.feed(p)
+		p = rp.poll()
+	return out
+
+
+# A drag round: press the item, drag to the customer, release there.
+func _drag_round_samples(item_center: Vector2, customer: Vector2) -> Array:
+	var mid := item_center.lerp(customer, 0.5)
+	return [
+		[item_center.x, item_center.y, true],
+		[mid.x, mid.y, true],
+		[customer.x, customer.y, true],
+		[customer.x, customer.y, false],
+	]
+
+
+func _customer_point(zones) -> Vector2:
+	var dz = zones.customer_zone()
+	return Vector2(dz.position.x + dz.size.x * 0.5, 0.5)
+
+
+func _test_full_round_via_replay() -> void:
+	print("\n[full round via replay: correct item delivered, till +1]")
+	var cfg = GameConfigCls.new()   # defaults: drag mode
+	var zones = ZonesCls.new(cfg.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var model = ShopModelCls.new(cfg, SEED)
+	model.start()
+	zones.configure(model.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var order = model.order_slot()
+
+	var res := _run_gesture(zones, "drag",
+		_drag_round_samples(zones.slot_center(order), _customer_point(zones)))
+
+	_check(res["grabbed"] == [order], "grabbed the order item (slot %d)" % order)
+	_check(res["released"].size() == 1 and res["released"][0]["delivered"],
+		"released over the customer (delivered)")
+	_check(res["released"][0]["slot"] == order, "released the item that was grabbed")
+
+	var result := model.deliver(order)
+	_check(result == "correct", "model scores it correct")
+	_check(model.till == 1, "till incremented to 1 (got %d)" % model.till)
+	_check(model.round_index == 1, "advanced to next round")
+
+
+func _test_wrong_item_not_penalized() -> void:
+	print("\n[wrong item: not delivered to till, no penalty, customer repeats]")
+	var cfg = GameConfigCls.new()
+	var zones = ZonesCls.new(cfg.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var model = ShopModelCls.new(cfg, SEED)
+	model.start()
+	zones.configure(model.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var order = model.order_slot()
+	var wrong = (order + 1) % model.items_on_shelf
+
+	var res := _run_gesture(zones, "drag",
+		_drag_round_samples(zones.slot_center(wrong), _customer_point(zones)))
+	_check(res["grabbed"] == [wrong], "grabbed a wrong item (slot %d)" % wrong)
+	_check(res["released"][0]["delivered"], "was dropped on the customer")
+
+	var result := model.deliver(wrong)
+	_check(result == "wrong", "model scores it wrong")
+	_check(model.till == 0, "till stays 0 (no penalty, got %d)" % model.till)
+	_check(model.round_index == 0, "round does NOT advance")
+	_check(model.order_slot() == order, "same customer keeps the same order")
+	_check(model.wrong_attempts() == 1, "wrong attempt counted (drives brighter glow)")
+
+
+func _test_release_outside_returns() -> void:
+	print("\n[release outside any zone: item returns, nothing delivered]")
+	var cfg = GameConfigCls.new()
+	var zones = ZonesCls.new(cfg.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var model = ShopModelCls.new(cfg, SEED)
+	model.start()
+	zones.configure(model.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var order = model.order_slot()
+	var c = zones.slot_center(order)
+	# Grab the item, then release back on the shelf (outside the customer zone).
+	var samples := [
+		[c.x, c.y, true],
+		[c.x, c.y, true],
+		[c.x, c.y, false],
+	]
+	var res := _run_gesture(zones, "drag", samples)
+	_check(res["grabbed"] == [order], "grabbed the item")
+	_check(res["released"].size() == 1 and not res["released"][0]["delivered"],
+		"released outside customer zone (NOT delivered)")
+	_check(not zones.in_customer_zone(c), "the release point is indeed outside the drop zone")
+
+
+func _test_ten_round_playthrough() -> void:
+	print("\n[ten-round replay: plays through to closing time]")
+	var cfg = GameConfigCls.new()   # rounds_per_session = 10
+	var zones = ZonesCls.new(cfg.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var model = ShopModelCls.new(cfg, SEED)
+	model.start()
+	zones.configure(model.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+
+	var safety := 0
+	while not model.is_closing() and safety < 100:
+		var order = model.order_slot()
+		var res := _run_gesture(zones, "drag",
+			_drag_round_samples(zones.slot_center(order), _customer_point(zones)))
+		var ok: bool = res["released"].size() == 1 and res["released"][0]["delivered"] \
+			and res["released"][0]["slot"] == order
+		if not ok:
+			break
+		model.deliver(order)
+		safety += 1
+
+	_check(model.is_closing(), "reached closing time")
+	_check(model.till == cfg.rounds_per_session, "till == %d after playthrough (got %d)"
+		% [cfg.rounds_per_session, model.till])
+	_check(safety == cfg.rounds_per_session, "took exactly %d rounds (got %d)"
+		% [cfg.rounds_per_session, safety])
+
+
+func _test_config_interaction_mode() -> void:
+	print("\n[config: interaction_mode routes drag vs tap_tap differently]")
+	var cfg = GameConfigCls.new()
+	var zones = ZonesCls.new(cfg.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var model = ShopModelCls.new(cfg, SEED)
+	model.start()
+	zones.configure(model.items_on_shelf, cfg.hit_box_size, cfg.drop_zone_size)
+	var order = model.order_slot()
+	var item_c = zones.slot_center(order)
+	var cust = _customer_point(zones)
+
+	# One continuous drag (press item, drag to customer, release) ...
+	var drag_samples := _drag_round_samples(item_c, cust)
+
+	# ... in DRAG mode: delivers in one gesture.
+	var drag_res := _run_gesture(zones, "drag", drag_samples)
+	_check(drag_res["released"].size() == 1 and drag_res["released"][0]["delivered"],
+		"drag mode: one drag delivers")
+
+	# ... in TAP_TAP mode: the same single gesture only PICKS UP (no delivery);
+	# delivery needs a second, separate tap on the customer.
+	var tap_res := _run_gesture(zones, "tap_tap", drag_samples)
+	_check(tap_res["grabbed"] == [order], "tap_tap mode: first tap picks the item up")
+	_check(tap_res["released"].size() == 0, "tap_tap mode: a drag does NOT deliver")
+
+	var two_taps := [
+		[item_c.x, item_c.y, true], [item_c.x, item_c.y, false],   # tap item
+		[cust.x, cust.y, true], [cust.x, cust.y, false],           # tap customer
+	]
+	var tap_res2 := _run_gesture(zones, "tap_tap", two_taps)
+	_check(tap_res2["released"].size() == 1 and tap_res2["released"][0]["delivered"],
+		"tap_tap mode: item-tap then customer-tap delivers")
+
+
+func _test_config_hit_box_size() -> void:
+	print("\n[config: larger hit_box_size widens the pickable area]")
+	# One slot, so there are no neighbors to muddy the test.
+	var small = ZonesCls.new(1, 0.10, 0.33)
+	var big = ZonesCls.new(1, 0.30, 0.33)
+	var c = small.slot_center(0)
+	var off: Vector2 = c + Vector2(0.08, 0.08)   # ~0.08 away on each axis
+	_check(small.item_at(off) == -1, "small hit box: off-center point misses the item")
+	_check(big.item_at(off) == 0, "large hit box: same point now hits the item")
+
+
+func _test_config_file_parses() -> void:
+	print("\n[config: res://config.cfg parses, and overrides are actually read]")
+	# Regression guard: ConfigFile rejects bare string values, which silently
+	# drops the WHOLE file back to defaults. Prove the shipped file parses.
+	var cf := ConfigFile.new()
+	_check(cf.load("res://config.cfg") == OK, "config.cfg parses cleanly (no bad values)")
+
+	# Prove load_from genuinely reads a file rather than returning defaults: write
+	# a config with non-default values to user:// and read them back.
+	var tmp := "user://test_config.cfg"
+	var w := ConfigFile.new()
+	w.set_value("interaction", "interaction_mode", "tap_tap")
+	w.set_value("interaction", "hit_box_size", 0.44)
+	w.set_value("session", "rounds_per_session", 3)
+	w.set_value("session", "hint_glow", "off")
+	w.save(tmp)
+	var cfg = GameConfigCls.new().load_from(tmp)
+	_check(cfg.interaction_mode == "tap_tap", "read interaction_mode from file")
+	_check(is_equal_approx(cfg.hit_box_size, 0.44), "read hit_box_size from file")
+	_check(cfg.rounds_per_session == 3, "read rounds_per_session from file")
+	_check(cfg.hint_glow == false, "read hint_glow=off as false")
+
+
+func _test_scenes_instantiate() -> void:
+	print("\n[scenes: title/shop/closing build without script errors]")
+	var insts := []
+	for path in ["res://scenes/title.tscn", "res://scenes/shop.tscn", "res://scenes/closing.tscn"]:
+		var ps := load(path)
+		_check(ps != null, "%s loads as a PackedScene" % path)
+		if ps == null:
+			continue
+		var inst = ps.instantiate()
+		_check(inst != null, "%s instantiates" % path)
+		get_root().add_child(inst)   # enters tree; _ready runs on the next frame
+		insts.append({"path": path, "node": inst})
+
+	# In a SceneTree script, _ready is deferred to the next processed frame.
+	await process_frame
+
+	for entry in insts:
+		var inst = entry["node"]
+		_check(inst.is_node_ready() and inst.get_child_count() > 0,
+			"%s built its view on _ready (%d children)" % [entry["path"], inst.get_child_count()])
+		get_root().remove_child(inst)
+		inst.free()
