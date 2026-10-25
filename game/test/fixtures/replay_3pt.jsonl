@@ -1,0 +1,3 @@
+{"t": 0.0, "x": 0.1, "y": 0.2, "down": false, "present": true}
+{"t": 0.1, "x": 0.5, "y": 0.5, "down": true, "present": true}
+{"t": 0.2, "x": 0.9, "y": 0.8, "down": true, "present": true}
