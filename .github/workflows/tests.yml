@@ -1,0 +1,49 @@
+name: Tests
+
+# Run the headless Godot test suite on every PR and on pushes to main, so a
+# regression can't slip in unnoticed. The suite is game/test/run_tests.gd; it
+# quits with exit code 0 when every assertion passes and 1 otherwise, which is
+# what gates this job.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  headless-tests:
+    runs-on: ubuntu-latest
+    env:
+      # Keep this in lockstep with the engine version pinned on the Spectre and
+      # in README / docs. One place to bump when the editor version moves.
+      GODOT_VERSION: "4.4.1"
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Install runtime libraries Godot needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1 unzip
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} (headless-capable build)
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          file="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          curl -fsSL -o godot.zip "${base}/${file}.zip"
+          unzip -q godot.zip
+          mv "${file}" godot
+          chmod +x godot
+          ./godot --headless --version
+
+      - name: Import the project
+        # First run generates the import cache under game/.godot/ (gitignored).
+        run: ./godot --headless --path game --import
+
+      - name: Run the headless test suite
+        # Exit code 0 = all assertions pass; non-zero fails the job.
+        run: ./godot --headless --path game --script res://test/run_tests.gd
