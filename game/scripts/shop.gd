@@ -2,24 +2,30 @@ extends Node2D
 
 ## The playable shop: the view and wiring over the pure pieces. It owns a
 ## ShopModel (the rules), a Zones (the geometry), a Select (the gesture state
-## machine) and an InputProvider (the finger/replay), and turns their events into
+## machine), an InputProvider (the finger/replay), an Attract (the idle pause)
+## and a CornerHold (the parent-exit gesture), and turns their events into
 ## sprites, tweens, confetti and sound. All the actual GAME logic lives in those
 ## pieces so it can be tested headless; this file is deliberately just "draw what
 ## the model says and animate the transitions".
 ##
 ## Everything variable comes from config.cfg via GameConfig — interaction mode,
-## hit-box size, drop-zone size, rounds, items on shelf, hints, voice speed —
-## nothing here is a hard-coded difficulty number.
+## hit-box size, drop-zone size, rounds, items on shelf, hints, voice speed,
+## attract idle timeout, parent-exit hold — nothing here is a hard-coded number.
 ##
-## Provider selection mirrors Phase 1: CLI `--provider=touch|replay` (+ `--replay=`)
-## overrides the `shopkeeper/input/provider` project setting; default is touch.
-## Tests inject a provider/config/seed directly before the node enters the tree.
+## Assets are fetched BY SLUG through AssetLibrary, so Phase 3's real art/voice
+## is a drop-in (see docs/DESIGN.md "Asset naming contract").
+##
+## Provider selection mirrors Phase 1: CLI `--provider=touch|replay` (+ `--replay=`),
+## plus `--record[=res://..|user://..]` to capture a tuning session. Default is
+## touch. Tests inject a provider/config/seed directly before the node enters the
+## tree.
 
 const DESIGN := Vector2(1920, 1080)
 const CLOSING_SCENE := "res://scenes/closing.tscn"
 const ITEM_TEX_SIZE := 256.0
 const ITEM_DISPLAY_PX := 180.0
 const CUSTOMER_COUNT := 5
+const DEFAULT_RECORD_PATH := "user://tuning_session.jsonl"
 
 # --- injected-before-_ready hooks (tests set these; live play leaves them null) ---
 var _provider_override: InputProvider = null
@@ -33,6 +39,10 @@ var _select: Select
 var _provider: InputProvider
 var _provider_kind := "touch"
 var _replay_path := ""
+var _record_path := ""
+
+var _attract: Attract
+var _corner: CornerHold
 
 var _audio: ShopAudio
 var _bg: Sprite2D
@@ -44,9 +54,22 @@ var _coins_root: Node2D
 var _confetti: CPUParticles2D
 var _shelf_sprites: Array[Sprite2D] = []
 
+# Attract-mode overlay (dim + a waving shopkeeper); hidden during play.
+var _attract_overlay: Node2D
+var _attract_dim: ColorRect
+var _attract_keeper: Sprite2D
+var _keeper_home: Vector2 = Vector2.ZERO
+
 var _held_slot := -1
 var _busy := false          ## true during the success celebration (ignores input)
 var _coins_placed := 0
+var _customer_no := 1       ## 1..CUSTOMER_COUNT — which customer is at the counter
+
+# Latest known pointer, kept so the parent-exit hold can accumulate across frames
+# where a perfectly still finger emits no new events.
+var _last_x := 0.0
+var _last_y := 0.0
+var _last_down := false
 
 
 # ---- test injection (call before add_child) ----
@@ -68,6 +91,9 @@ func _ready() -> void:
 	_select.item_moved.connect(_on_item_moved)
 	_select.item_released.connect(_on_item_released)
 
+	_attract = Attract.new(_config.attract_idle_seconds)
+	_corner = CornerHold.new(_config.parent_exit_hold_seconds)
+
 	_audio = ShopAudio.new()
 	add_child(_audio)
 	_audio.config(_config)
@@ -84,35 +110,95 @@ func _ready() -> void:
 # ---------------------------------------------------------------- provider setup
 func _make_provider() -> InputProvider:
 	_provider_kind = str(ProjectSettings.get_setting("shopkeeper/input/provider", "touch"))
+	var want_record := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--provider="):
 			_provider_kind = arg.get_slice("=", 1)
 		elif arg.begins_with("--replay="):
 			_replay_path = arg.get_slice("=", 1)
+		elif arg == "--record":
+			want_record = true
+		elif arg.begins_with("--record="):
+			want_record = true
+			_record_path = arg.get_slice("=", 1)
+
+	var base: InputProvider
 	if _provider_kind == "replay" and not _replay_path.is_empty():
-		return ReplayProvider.new(_replay_path, true)
-	return TouchProvider.new(Vector2(get_viewport().size))
+		base = ReplayProvider.new(_replay_path, true)
+	else:
+		base = TouchProvider.new(Vector2(get_viewport().size))
+
+	# Opt-in recording: wrap the chosen provider in a Recorder (writes JSONL to
+	# user:// for later --provider=replay tuning). Never on by default (privacy).
+	if want_record:
+		if _record_path.is_empty():
+			_record_path = DEFAULT_RECORD_PATH
+		print("Shopkeeper: recording this session to %s" % _record_path)
+		return Recorder.new(base, _record_path)
+	return base
 
 
 func _input(event: InputEvent) -> void:
+	# The touch provider may be wrapped in a Recorder; reach through to it.
+	var tp := _touch_provider()
+	if tp != null:
+		tp.feed_event(event)
+
+
+func _touch_provider() -> TouchProvider:
 	if _provider is TouchProvider:
-		(_provider as TouchProvider).feed_event(event)
+		return _provider as TouchProvider
+	if _provider is Recorder and (_provider as Recorder).inner() is TouchProvider:
+		return (_provider as Recorder).inner() as TouchProvider
+	return null
 
 
 func _on_viewport_resized() -> void:
-	if _provider is TouchProvider:
-		(_provider as TouchProvider).set_viewport_size(Vector2(get_viewport().size))
+	var tp := _touch_provider()
+	if tp != null:
+		tp.set_viewport_size(Vector2(get_viewport().size))
+
+
+func _exit_tree() -> void:
+	# Flush a Recorder's file (and let any provider release resources) when the
+	# scene changes or the game quits.
+	if _provider != null:
+		_provider.stop()
 
 
 # ---------------------------------------------------------------- per-frame pump
 func _process(delta: float) -> void:
+	_pump_provider(delta)
+	_animate_idle(delta)
+	_update_attract(delta)
+
+
+func _pump_provider(delta: float) -> void:
 	if _provider != null:
 		var p: InputProvider.Pointer = _provider.poll()
+		var latest: InputProvider.Pointer = null
 		while p != null:
-			if not _busy:
-				_select.feed(p)
+			latest = p
+			if not p.present:
+				_attract.notice_absent()           # camera: room empty → attract now
+			else:
+				var resumed := _attract.notice_activity()
+				# Feed the gesture machine only during live play: not while the
+				# success celebration runs, not while attracting, and not on the
+				# single sample that just woke us from attract.
+				if not _busy and not _attract.is_attracting() and not resumed:
+					_select.feed(p)
 			p = _provider.poll()
-	_animate_idle(delta)
+		if latest != null:
+			_last_x = latest.x
+			_last_y = latest.y
+			_last_down = latest.down
+
+	# Parent-exit gesture: a sustained hold in the dead top-right corner. Checked
+	# every frame off the last known pointer so a still finger still accumulates.
+	# Works from attract mode too (a grown-up can quit the paused screen).
+	if _corner.update(_last_x, _last_y, _last_down, delta):
+		get_tree().quit()
 
 
 func _animate_idle(_delta: float) -> void:
@@ -126,13 +212,26 @@ func _animate_idle(_delta: float) -> void:
 		spr.position.y = home.y + sin(t * 2.0 + float(i)) * 6.0
 
 
+func _update_attract(delta: float) -> void:
+	var attracting := _attract.tick(delta)
+	if _attract_overlay == null:
+		return
+	_attract_overlay.visible = attracting
+	if attracting:
+		# Shopkeeper waves: a gentle bob plus a rocking rotation.
+		var t := Time.get_ticks_msec() / 1000.0
+		if _attract_keeper != null:
+			_attract_keeper.position.y = _keeper_home.y + sin(t * 2.0) * 16.0
+			_attract_keeper.rotation = sin(t * 3.2) * 0.22
+
+
 # ---------------------------------------------------------------- view building
 func _build_view() -> void:
 	_bg = Sprite2D.new()
 	_bg.centered = false
-	var bg_path := "res://assets/backgrounds/shop.png"
-	if ResourceLoader.exists(bg_path):
-		_bg.texture = load(bg_path)
+	var bg_tex := AssetLibrary.background("shop")
+	if bg_tex != null:
+		_bg.texture = bg_tex
 	add_child(_bg)
 
 	# Customer drop zone: the whole left strip, softly tinted; brightens on approach.
@@ -191,6 +290,33 @@ func _build_view() -> void:
 	add_child(_till_label)
 	_update_till()
 
+	_build_attract_overlay()
+
+
+func _build_attract_overlay() -> void:
+	_attract_overlay = Node2D.new()
+	_attract_overlay.z_index = 100
+	_attract_overlay.visible = false
+	add_child(_attract_overlay)
+
+	# Soft dim over the whole shop (no text — the waving shopkeeper is the invite,
+	# keeping DESIGN's "no on-screen text" rule).
+	_attract_dim = ColorRect.new()
+	_attract_dim.position = Vector2.ZERO
+	_attract_dim.size = DESIGN
+	_attract_dim.color = Color(0.0, 0.0, 0.0, 0.32)
+	_attract_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_attract_overlay.add_child(_attract_dim)
+
+	_attract_keeper = Sprite2D.new()
+	var keeper_tex := AssetLibrary.texture("shopkeeper")
+	if keeper_tex != null:
+		_attract_keeper.texture = keeper_tex
+		_attract_keeper.scale = _fit_scale(keeper_tex, 520.0)
+	_keeper_home = Vector2(DESIGN.x * 0.5, DESIGN.y * 0.62)
+	_attract_keeper.position = _keeper_home
+	_attract_overlay.add_child(_attract_keeper)
+
 
 # ---------------------------------------------------------------- select signals
 func _on_item_grabbed(slot: int) -> void:
@@ -230,7 +356,7 @@ func _celebrate(slot: int) -> void:
 	var spr := _shelf_sprites[slot]
 	spr.z_index = 10
 	_audio.play("cheer")
-	_audio.play_thanks()
+	_audio.play_thanks(_customer_no)
 	_confetti.position = _customer_pos()
 	_confetti.restart()
 	_confetti.emitting = true
@@ -278,22 +404,23 @@ func _return_to_slot(slot: int, play_boing: bool) -> void:
 # ---------------------------------------------------------------- customer / shelf
 func _present_customer() -> void:
 	var idx := _model.round_index % CUSTOMER_COUNT
-	var cust_path := "res://assets/sprites/customer_%d.png" % (idx + 1)
-	if ResourceLoader.exists(cust_path):
-		_customer.texture = load(cust_path)
-		_customer.scale = _fit_scale(_customer.texture, 360.0)
+	_customer_no = idx + 1
+	var cust_tex := AssetLibrary.texture("customer_%d" % _customer_no)
+	if cust_tex != null:
+		_customer.texture = cust_tex
+		_customer.scale = _fit_scale(cust_tex, 360.0)
 	# Placeholder "voice": show the order as text. TODO(Phase 3): spoken line only.
 	_order_label.text = "“%s” please!" % _model.order_item()
-	_audio.play_order(_model.order_item())
+	_audio.play_order(_model.order_item(), _customer_no)
 	_update_hints()
 
 
 func _refresh_shelf() -> void:
 	for i in _shelf_sprites.size():
 		var spr := _shelf_sprites[i]
-		var path := "res://assets/sprites/item_%s.png" % _model.shelf_item(i)
-		if ResourceLoader.exists(path):
-			spr.texture = load(path)
+		var tex := AssetLibrary.texture("item_%s" % _model.shelf_item(i))
+		if tex != null:
+			spr.texture = tex
 		spr.position = _slot_home(i)
 		spr.scale = _item_scale()
 		spr.z_index = 0
@@ -345,9 +472,9 @@ func _pop(spr: Sprite2D) -> void:
 
 func _spawn_coin() -> void:
 	var coin := Sprite2D.new()
-	var path := "res://assets/sprites/coin.png"
-	if ResourceLoader.exists(path):
-		coin.texture = load(path)
+	var tex := AssetLibrary.texture("coin")
+	if tex != null:
+		coin.texture = tex
 	var counter := _zones.counter_rect()
 	var slot_w := counter.size.x / 10.0
 	var cx := (counter.position.x + slot_w * (0.5 + float(_coins_placed % 10))) * DESIGN.x

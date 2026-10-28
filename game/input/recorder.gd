@@ -21,6 +21,11 @@ func _init(inner: InputProvider = null, path: String = "user://session.jsonl") -
 	_path = path
 
 
+## The wrapped provider (so a caller can reach a TouchProvider to feed it events).
+func inner() -> InputProvider:
+	return _inner
+
+
 func start() -> void:
 	if _inner != null:
 		_inner.start()

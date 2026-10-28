@@ -22,6 +22,11 @@ const ZonesCls := preload("res://scripts/zones.gd")
 const SelectCls := preload("res://scripts/select.gd")
 const ShopModelCls := preload("res://scripts/shop_model.gd")
 
+# Phase 3 pieces.
+const AssetLibraryCls := preload("res://scripts/assets.gd")
+const AttractCls := preload("res://scripts/attract.gd")
+const CornerHoldCls := preload("res://scripts/corner_hold.gd")
+
 const FIXTURE_3PT := "res://test/fixtures/replay_3pt.jsonl"
 const SEED := 20261025
 
@@ -44,6 +49,13 @@ func _initialize() -> void:
 	_test_config_interaction_mode()
 	_test_config_hit_box_size()
 	_test_config_file_parses()
+
+	print("\n== Shopkeeper Phase 3 tests ==")
+	_test_asset_present_and_fallback()
+	_test_asset_format_priority()
+	_test_attract_pause_and_resume()
+	_test_corner_hold_exit()
+
 	await _test_scenes_instantiate()   # needs a real frame for _ready to fire
 
 	print("\n== %d passed, %d failed ==" % [_pass, _fail])
@@ -390,6 +402,107 @@ func _test_config_file_parses() -> void:
 	_check(is_equal_approx(cfg.hit_box_size, 0.44), "read hit_box_size from file")
 	_check(cfg.rounds_per_session == 3, "read rounds_per_session from file")
 	_check(cfg.hint_glow == false, "read hint_glow=off as false")
+
+
+# ======================= Phase 3: packaging / polish =========================
+
+# --- asset-swap seam: present asset used; missing slug falls back, no crash ----
+func _test_asset_present_and_fallback() -> void:
+	print("\n[assets: present slug is used; missing slug falls back to a placeholder]")
+	AssetLibraryCls.reset_cache()
+
+	# A committed placeholder exists for this slug → it is resolved and loaded.
+	_check(AssetLibraryCls.sprite_path("item_apple") == "res://assets/sprites/item_apple.png",
+		"resolves item_apple to its real file")
+	var tex = AssetLibraryCls.texture("item_apple")
+	_check(tex != null and tex is Texture2D, "present sprite loads as a Texture2D")
+	_check(not (tex is PlaceholderTexture2D), "present sprite is the real asset, not the placeholder")
+
+	# A slug with no file resolves to "" and hands back a non-null placeholder,
+	# so the view can always assign Sprite2D.texture without crashing.
+	_check(AssetLibraryCls.sprite_path("no_such_slug_xyz") == "", "missing slug resolves to empty path")
+	var fb = AssetLibraryCls.texture("no_such_slug_xyz")
+	_check(fb != null and fb is PlaceholderTexture2D, "missing sprite falls back to a PlaceholderTexture2D (no crash)")
+
+	# A present SFX placeholder (wav) is used; a missing one is silent (null).
+	_check(AssetLibraryCls.sfx("pop") != null, "present SFX placeholder (pop.wav) loads")
+	_check(AssetLibraryCls.voice("no_such_voice_xyz") == null, "missing voice is silent (null), not an error")
+
+
+# --- format priority: a real .ogg wins over a placeholder .wav at the same slug -
+func _test_asset_format_priority() -> void:
+	print("\n[assets: .ogg (real) is preferred over .wav (placeholder) for the same slug]")
+	var dir := "user://asset_prio_test/"
+	DirAccess.make_dir_recursive_absolute(dir)
+	_write_empty(dir + "x.wav")
+	_write_empty(dir + "x.ogg")
+	var both := AssetLibraryCls.resolve(dir, "x", AssetLibraryCls.AUDIO_EXTS)
+	_check(both.ends_with("x.ogg"), "with both present, .ogg (the real format) is chosen")
+
+	DirAccess.remove_absolute(dir + "x.ogg")
+	var wav_only := AssetLibraryCls.resolve(dir, "x", AssetLibraryCls.AUDIO_EXTS)
+	_check(wav_only.ends_with("x.wav"), "with the .ogg gone, it falls back to the .wav placeholder")
+
+	_check(AssetLibraryCls.resolve(dir, "nope", AssetLibraryCls.AUDIO_EXTS) == "",
+		"a slug with no file resolves to empty")
+	# tidy up
+	DirAccess.remove_absolute(dir + "x.wav")
+	DirAccess.remove_absolute(dir)
+
+
+func _write_empty(path: String) -> void:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_string("x")
+		f.close()
+
+
+# --- attract pause: trips after the idle timeout, resumes on activity ----------
+func _test_attract_pause_and_resume() -> void:
+	print("\n[attract: idle for the timeout pauses; a touch resumes; absent trips instantly]")
+	var a = AttractCls.new(1.0)   # 1 second idle timeout
+	_check(not a.is_attracting(), "starts in active play")
+	_check(not a.tick(0.5), "still playing after 0.5s idle")
+	_check(a.tick(0.6), "attract trips once total idle crosses the timeout (1.1s)")
+	_check(a.is_attracting(), "now attracting")
+
+	var resumed: bool = a.notice_activity()
+	_check(resumed, "a touch while attracting reports a resume (to swallow that sample)")
+	_check(not a.is_attracting(), "resumed back to play")
+	_check(not a.tick(0.5), "idle clock reset on resume (0.5s < 1.0s)")
+
+	# present=false (camera: nobody there) attracts immediately, before any timeout.
+	var b = AttractCls.new(20.0)
+	b.notice_absent()
+	_check(b.tick(0.0), "present=false trips attract immediately, regardless of timeout")
+
+
+# --- parent-exit: fires only on a sustained corner hold, never on normal play --
+func _test_corner_hold_exit() -> void:
+	print("\n[parent-exit: a sustained top-right corner hold fires; normal play does not]")
+	# Sustained hold in the extreme corner completes once it reaches the duration.
+	var c = CornerHoldCls.new(1.0)
+	_check(not c.update(0.97, 0.03, true, 0.5), "0.5s corner hold: not yet")
+	_check(c.update(0.97, 0.03, true, 0.6), "crossing 1.0s of corner hold fires")
+
+	# Normal play never reaches it: a long press in the middle of the screen...
+	var c2 = CornerHoldCls.new(1.0)
+	_check(not c2.update(0.5, 0.5, true, 2.0), "a 2s hold in mid-screen does NOT fire")
+	# ...nor a long press on a shelf item (right side but below the corner wedge).
+	_check(not c2.update(0.93, 0.30, true, 2.0), "a 2s hold on a shelf item does NOT fire")
+
+	# Sliding out of the corner resets the timer (so a brush-past can't accumulate).
+	var c3 = CornerHoldCls.new(1.0)
+	_check(not c3.update(0.97, 0.03, true, 0.8), "0.8s in the corner")
+	_check(not c3.update(0.5, 0.5, true, 0.8), "moved out: resets, does not fire")
+	_check(not c3.update(0.97, 0.03, true, 0.3), "back in corner: only 0.3s accrued, not yet")
+	_check(c3.update(0.97, 0.03, true, 0.8), "fires once the fresh hold reaches 1.0s")
+
+	# Lifting the finger resets too.
+	var c4 = CornerHoldCls.new(1.0)
+	_check(not c4.update(0.97, 0.03, true, 0.9), "0.9s held")
+	_check(not c4.update(0.97, 0.03, false, 0.9), "finger lifted: resets")
+	_check(not c4.update(0.97, 0.03, true, 0.9), "fresh hold at 0.9s has not fired yet")
 
 
 func _test_scenes_instantiate() -> void:

@@ -10,7 +10,7 @@ config_version=5
 [application]
 
 config/name="Shopkeeper"
-config/description="A touch-based kids' game. Phase 2: drag-and-drop shop loop (placeholder art)."
+config/description="A touch-based kids' game. Phase 3: code-complete v1 with placeholder art — title/closing screens, attract pause, parent-exit, asset-swap seam, Mac asset tooling."
 run/main_scene="res://scenes/title.tscn"
 config/features=PackedStringArray("4.4")
 
@@ -20,6 +20,9 @@ window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+; Landscape locked: the shop is authored 16:9 and never rotates (on the Spectre,
+; a tablet, or a future Android build).
+window/handheld/orientation="landscape"
 
 [input_devices]
 

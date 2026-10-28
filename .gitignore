@@ -1,0 +1,6 @@
+
+# Python (asset tools)
+__pycache__/
+*.pyc
+.venv/
+uv.lock

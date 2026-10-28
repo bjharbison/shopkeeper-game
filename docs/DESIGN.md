@@ -51,3 +51,43 @@ are pre-rendered audio, one voice per character.
 
 No network permission, no accounts, no analytics, no recording unless explicitly
 asked. On a future camera console, frames are processed in RAM and discarded.
+
+## Asset naming contract
+
+Every sprite, background, voice line and SFX is loaded **by slug** through
+`scripts/assets.gd` (`AssetLibrary`). Nothing in the view code hard-codes a path.
+This is the asset-swap seam: the Phase 2 placeholders and the Phase 3 real art
+share the same slug names, so Brian's Mac pipeline (see "Asset pipeline") drops
+real files in under these names and the game uses them with **zero code change**.
+The tool manifests (`tools/assets.csv`, `tools/voice_lines.csv`) generate exactly
+these names.
+
+| Folder (`game/assets/…`) | Slug / filename | What it is |
+| --- | --- | --- |
+| `sprites/` | `item_<id>.png` | a shop item; `<id>` ∈ apple, bread, teddy, balloon, flower, fish, cake, hat |
+| `sprites/` | `customer_<n>.png` | a customer, `<n>` = 1..5 |
+| `sprites/` | `shopkeeper.png` | her avatar (used for the attract-mode wave) |
+| `sprites/` | `coin.png` | the till coin |
+| `backgrounds/` | `shop.png` | shop interior (title + play) |
+| `backgrounds/` | `shop_sunset.png` | sunset interior (closing screen) |
+| `voice/` | `order_<id>.ogg` | the customer asking for `item_<id>` |
+| `voice/` | `thanks.ogg` | the thank-you after a correct delivery |
+| `sfx/` | `pop` / `boing` / `cheer` / `giggle` / `coin` / `till` | event sounds |
+
+Resolution rules (`AssetLibrary`):
+
+- **Format priority.** Audio tries `.ogg` first, then `.wav`. Real assets ship as
+  OGG (Kokoro voice, CC0 SFX); the Phase 2 placeholders are WAV. So a real
+  `pop.ogg` dropped next to `pop.wav` wins automatically. Sprites/backgrounds are
+  `.png`.
+- **Fallback, never a crash.** A missing sprite slug yields an empty
+  `PlaceholderTexture2D` (the view still lays out); a missing background yields a
+  flat fill; a missing voice/SFX slug is simply silent. Present files are always
+  used in preference.
+- **Per-customer voice (optional).** `order_<id>_c<n>.ogg` / `thanks_c<n>.ogg`
+  (customer `n` = 1..5) are preferred over the shared line when present — this is
+  how "one voice per character" and name-baked lines ("thanks, Rose!") ship with
+  no code change.
+
+After dropping new files into `game/assets/`, open the project in the Godot
+editor once so it (re)imports them; the next launch picks them up.
