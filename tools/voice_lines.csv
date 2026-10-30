@@ -1,0 +1,23 @@
+# Shopkeeper v1 voice manifest — drives tools/make_voice.py.
+#
+# One row per spoken line. make_voice.py renders each through Kokoro-FastAPI on
+# the Mac and writes <slug>.ogg into game/assets/voice/. The slug names are what
+# scripts/audio.gd asks for (see docs/DESIGN.md "Asset naming contract"):
+#   order_<item>  — the customer asking for that item
+#   thanks        — the shared thank-you after a correct delivery
+# Optional per-customer variants (one voice per character, per DESIGN) just add a
+# `_c<n>` suffix row, e.g. thanks_c1 / order_apple_c1, and the game prefers them.
+#
+# Columns: slug,voice,speed,text
+# `voice` is a Kokoro voice id (e.g. af_heart, af_bella, am_adam) — pick one per
+# character on the Mac. `speed` is 0.5..2.0. Lines are short, for a 4-year-old.
+slug,voice,speed,text
+order_apple,af_heart,0.95,Can I have an apple, please?
+order_bread,af_heart,0.95,Some bread, please!
+order_teddy,af_heart,0.95,I would like the teddy, please.
+order_balloon,af_heart,0.95,A balloon, please!
+order_flower,af_heart,0.95,Can I have a flower, please?
+order_fish,af_heart,0.95,A fish, please!
+order_cake,af_heart,0.95,I want the cake, please!
+order_hat,af_heart,0.95,Can I have the hat, please?
+thanks,af_bella,1.0,Thank you so much!

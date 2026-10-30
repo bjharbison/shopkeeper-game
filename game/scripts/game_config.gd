@@ -25,6 +25,10 @@ var shuffle_every: int = 3
 # --- [voice] ---
 var voice_speed: float = 1.0
 
+# --- [session] (attract / exit) ---
+var attract_idle_seconds: float = 20.0      ## idle seconds before the attract pause
+var parent_exit_hold_seconds: float = 3.0   ## top-right-corner hold to quit (hidden)
+
 const _VALID_MODES := ["drag", "tap_tap"]
 
 
@@ -46,6 +50,8 @@ func load_from(path: String = "res://config.cfg") -> GameConfig:
 	hint_glow = _as_bool(cfg.get_value("session", "hint_glow", hint_glow))
 	hint_rounds = maxi(0, int(cfg.get_value("session", "hint_rounds", hint_rounds)))
 	shuffle_every = maxi(0, int(cfg.get_value("session", "shuffle_every", shuffle_every)))
+	attract_idle_seconds = clampf(float(cfg.get_value("session", "attract_idle_seconds", attract_idle_seconds)), 3.0, 600.0)
+	parent_exit_hold_seconds = clampf(float(cfg.get_value("session", "parent_exit_hold_seconds", parent_exit_hold_seconds)), 1.0, 10.0)
 
 	voice_speed = clampf(float(cfg.get_value("voice", "voice_speed", voice_speed)), 0.25, 4.0)
 	return self
@@ -64,6 +70,8 @@ func set_overrides(overrides: Dictionary) -> GameConfig:
 			"hint_glow": hint_glow = _as_bool(overrides[key])
 			"hint_rounds": hint_rounds = int(overrides[key])
 			"shuffle_every": shuffle_every = int(overrides[key])
+			"attract_idle_seconds": attract_idle_seconds = float(overrides[key])
+			"parent_exit_hold_seconds": parent_exit_hold_seconds = float(overrides[key])
 			"voice_speed": voice_speed = float(overrides[key])
 			_: push_warning("GameConfig: unknown override '%s'" % key)
 	return self

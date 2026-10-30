@@ -1,0 +1,28 @@
+# Shopkeeper v1 art manifest — drives tools/comfy_batch.py.
+#
+# One row per generated sprite/background. The final ComfyUI prompt is the FROZEN
+# style stem (set in comfy_batch.py after the style-anchor pass, from the words in
+# docs/DESIGN.md) + this row's `subject`. `target_dir` is relative to game/assets/
+# and MUST match the slug names the game loads (see docs/DESIGN.md "Asset naming
+# contract"): sprites are saved as <target_dir>/<slug>.png.
+#
+# Columns: slug,target_dir,subject
+# (Lines starting with # are ignored. The subjects stay faithful to the item /
+# character list in DESIGN — no art direction beyond what the design doc states.)
+slug,target_dir,subject
+item_apple,sprites,a single shiny red apple, one object, isolated on a plain flat background
+item_bread,sprites,a crusty loaf of bread, one object, isolated on a plain flat background
+item_teddy,sprites,a cuddly brown teddy bear toy, one object, isolated on a plain flat background
+item_balloon,sprites,a single round party balloon on a short string, isolated on a plain flat background
+item_flower,sprites,a single cheerful flower with a green stem, isolated on a plain flat background
+item_fish,sprites,a plump friendly fish, one object, isolated on a plain flat background
+item_cake,sprites,a small frosted birthday cake, one object, isolated on a plain flat background
+item_hat,sprites,a colourful party hat, one object, isolated on a plain flat background
+customer_1,sprites,a friendly cartoon child shop customer, full body, front view, standing, isolated on a plain flat background
+customer_2,sprites,a friendly cartoon grandma shop customer, full body, front view, standing, isolated on a plain flat background
+customer_3,sprites,a friendly cartoon dog shop customer standing on two legs, full body, front view, isolated on a plain flat background
+customer_4,sprites,a friendly cartoon robot shop customer, full body, front view, standing, isolated on a plain flat background
+customer_5,sprites,a friendly cartoon rabbit shop customer, full body, front view, standing, isolated on a plain flat background
+shopkeeper,sprites,a cheerful cartoon girl shopkeeper wearing an apron, full body, front view, waving, isolated on a plain flat background
+shop,backgrounds,the warm cosy interior of a little shop with shelves and a counter, soft painterly background, no characters
+shop_sunset,backgrounds,the warm cosy interior of a little shop at sunset with golden light through the window, soft painterly background, no characters

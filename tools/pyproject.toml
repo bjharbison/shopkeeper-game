@@ -1,0 +1,36 @@
+# Dependencies for the Shopkeeper asset-pipeline tools ONLY (tools/*.py). These
+# run on Brian's Mac against local ComfyUI + Kokoro to generate real art and
+# voice; they are NEVER installed or run on the Spectre or the Pi console — the
+# game ships pre-rendered files and runs nothing but Godot.
+#
+# Setup on the Mac (uv):
+#     cd tools
+#     uv sync
+#     uv run comfy_batch.py --workflow comfy_workflow.api.json
+#     uv run rembg_all.py ../game/assets/sprites
+#     uv run make_voice.py
+#
+# (Run from the tools/ folder, or pass the script path from the repo root:
+#  `uv run tools/make_voice.py`.)
+
+[project]
+name = "shopkeeper-tools"
+version = "0.1.0"
+description = "Mac-side asset pipeline (ComfyUI sprites, Kokoro voice, background removal) for the Shopkeeper game."
+requires-python = ">=3.12"
+dependencies = [
+    # comfy_batch.py + make_voice.py — HTTP to local ComfyUI / Kokoro-FastAPI
+    "requests>=2.31",
+    # make_voice.py — decode Kokoro WAV, re-encode to OGG/Vorbis, normalise
+    "soundfile>=0.12",
+    "numpy>=1.26",
+    # rembg_all.py — background removal (pulls onnxruntime) + image handling
+    "rembg>=2.0.50",
+    "pillow>=10.0",
+]
+
+# make_placeholders.py (the Phase 2 stand-in art generator) needs only Pillow,
+# which is already in the list above, so `uv run make_placeholders.py` works too.
+
+[tool.uv]
+package = false
